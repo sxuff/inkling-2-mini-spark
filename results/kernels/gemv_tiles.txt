@@ -1,0 +1,77 @@
+qkvr_local   N=8600 K=2304 x15  stock    156.4 us  253.3 GB/s
+   cfg (16, 512, 4, 3)       155.0 us  255.6 GB/s  exact=True
+   cfg (16, 512, 4, 2)       157.9 us  251.0 GB/s  exact=True
+   cfg (16, 512, 8, 3)       156.4 us  253.3 GB/s  exact=True
+   cfg (16, 512, 2, 3)       156.3 us  253.6 GB/s  exact=True
+   cfg (16, 1024, 4, 2)      161.6 us  245.2 GB/s  exact=True
+   cfg (16, 1024, 8, 2)      165.0 us  240.2 GB/s  exact=True
+   cfg (32, 512, 4, 2)       158.5 us  250.0 GB/s  exact=True
+   cfg (32, 512, 8, 2)       158.7 us  249.8 GB/s  exact=True
+   cfg (16, 256, 2, 4)       155.7 us  254.4 GB/s  exact=True
+   cfg (16, 512, 4, 4)       156.6 us  253.0 GB/s  exact=True
+qside_global N=6552 K=2304 x19  stock    120.1 us  251.3 GB/s
+   cfg (16, 512, 4, 3)       119.4 us  252.9 GB/s  exact=True
+   cfg (16, 512, 4, 2)       128.1 us  235.8 GB/s  exact=True
+   cfg (16, 512, 8, 3)       124.8 us  241.8 GB/s  exact=True
+   cfg (16, 512, 2, 3)       124.9 us  241.8 GB/s  exact=True
+   cfg (16, 1024, 4, 2)      125.6 us  240.4 GB/s  exact=True
+   cfg (16, 1024, 8, 2)      128.8 us  234.3 GB/s  exact=True
+   cfg (32, 512, 4, 2)       123.0 us  245.4 GB/s  exact=True
+   cfg (32, 512, 8, 2)       122.3 us  247.0 GB/s  exact=True
+   cfg (16, 256, 2, 4)       119.0 us  253.8 GB/s  exact=True
+   cfg (16, 512, 4, 4)       119.1 us  253.5 GB/s  exact=True
+kv_global    N=1024 K=2304 x40  stock     20.6 us  228.6 GB/s
+   cfg (16, 512, 4, 3)        21.9 us  215.5 GB/s  exact=True
+   cfg (16, 512, 4, 2)        22.2 us  213.0 GB/s  exact=True
+   cfg (16, 512, 8, 3)        23.7 us  198.9 GB/s  exact=True
+   cfg (16, 512, 2, 3)        22.8 us  207.0 GB/s  exact=True
+   cfg (16, 1024, 4, 2)       27.6 us  170.9 GB/s  exact=True
+   cfg (16, 1024, 8, 2)       29.5 us  160.0 GB/s  exact=True
+   cfg (32, 512, 4, 2)        24.1 us  196.0 GB/s  exact=True
+   cfg (32, 512, 8, 2)        24.0 us  196.4 GB/s  exact=True
+   cfg (16, 256, 2, 4)        20.8 us  227.3 GB/s  exact=True
+   cfg (16, 512, 4, 4)        22.6 us  208.9 GB/s  exact=True
+wo           N=2304 K=3072 x40  stock     56.8 us  249.4 GB/s
+   cfg (16, 512, 4, 3)        57.5 us  246.4 GB/s  exact=True
+   cfg (16, 512, 4, 2)        57.3 us  246.9 GB/s  exact=True
+   cfg (16, 512, 8, 3)        58.4 us  242.4 GB/s  exact=True
+   cfg (16, 512, 2, 3)        58.3 us  242.7 GB/s  exact=True
+   cfg (16, 1024, 4, 2)       60.6 us  233.8 GB/s  exact=True
+   cfg (16, 1024, 8, 2)       61.2 us  231.2 GB/s  exact=True
+   cfg (32, 512, 4, 2)        57.6 us  245.6 GB/s  exact=True
+   cfg (32, 512, 8, 2)        57.3 us  246.9 GB/s  exact=True
+   cfg (16, 256, 2, 4)        56.8 us  249.1 GB/s  exact=True
+   cfg (16, 512, 4, 4)        57.8 us  245.1 GB/s  exact=True
+lm_head      N=201024 K=2304 x2  stock   3612.6 us  256.4 GB/s
+   cfg (16, 512, 4, 3)      3528.6 us  262.5 GB/s  exact=True
+   cfg (16, 512, 4, 2)      3647.3 us  254.0 GB/s  exact=True
+   cfg (16, 512, 8, 3)      3528.6 us  262.5 GB/s  exact=True
+   cfg (16, 512, 2, 3)      3536.4 us  261.9 GB/s  exact=True
+   cfg (16, 1024, 4, 2)     3530.0 us  262.4 GB/s  exact=True
+   cfg (16, 1024, 8, 2)     3558.4 us  260.3 GB/s  exact=True
+   cfg (32, 512, 4, 2)      3609.9 us  256.6 GB/s  exact=True
+   cfg (32, 512, 8, 2)      3611.8 us  256.5 GB/s  exact=True
+   cfg (16, 256, 2, 4)      3731.3 us  248.3 GB/s  exact=True
+   cfg (16, 512, 4, 4)      3538.5 us  261.8 GB/s  exact=True
+draft_gu     N=18432 K=2304 x7  stock    327.8 us  259.1 GB/s
+   cfg (16, 512, 4, 3)       322.9 us  263.0 GB/s  exact=True
+   cfg (16, 512, 4, 2)       330.6 us  256.9 GB/s  exact=True
+   cfg (16, 512, 8, 3)       330.5 us  257.0 GB/s  exact=True
+   cfg (16, 512, 2, 3)       326.9 us  259.8 GB/s  exact=True
+   cfg (16, 1024, 4, 2)      330.4 us  257.1 GB/s  exact=True
+   cfg (16, 1024, 8, 2)      333.5 us  254.7 GB/s  exact=True
+   cfg (32, 512, 4, 2)       332.8 us  255.2 GB/s  exact=True
+   cfg (32, 512, 8, 2)       329.5 us  257.8 GB/s  exact=True
+   cfg (16, 256, 2, 4)       326.4 us  260.2 GB/s  exact=True
+   cfg (16, 512, 4, 4)       323.9 us  262.2 GB/s  exact=True
+draft_down   N=2304 K=9216 x14  stock    167.5 us  253.6 GB/s
+   cfg (16, 512, 4, 3)       165.9 us  256.0 GB/s  exact=True
+   cfg (16, 512, 4, 2)       165.5 us  256.6 GB/s  exact=True
+   cfg (16, 512, 8, 3)       168.0 us  252.7 GB/s  exact=True
+   cfg (16, 512, 2, 3)       168.9 us  251.4 GB/s  exact=True
+   cfg (16, 1024, 4, 2)      168.5 us  252.1 GB/s  exact=True
+   cfg (16, 1024, 8, 2)      170.1 us  249.7 GB/s  exact=True
+   cfg (32, 512, 4, 2)       168.2 us  252.5 GB/s  exact=True
+   cfg (32, 512, 8, 2)       166.1 us  255.7 GB/s  exact=True
+   cfg (16, 256, 2, 4)       165.4 us  256.7 GB/s  exact=True
+   cfg (16, 512, 4, 4)       165.7 us  256.3 GB/s  exact=True

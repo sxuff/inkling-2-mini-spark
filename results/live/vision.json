@@ -1,0 +1,62 @@
+[
+  {
+    "images": 2,
+    "turns": 1,
+    "http": 200,
+    "answer": "red, blue",
+    "expected": [
+      "red",
+      "blue"
+    ],
+    "matches_in_order": true,
+    "elapsed_s": 1.1075499259750359,
+    "usage": {
+      "prompt_tokens": 67,
+      "total_tokens": 119,
+      "completion_tokens": 52,
+      "completion_tokens_details": {
+        "reasoning_tokens": 42
+      }
+    },
+    "png_sha256": [
+      "d604ac3e8f1fe726604d8e9e1eb3c8e6f8bbb961723e2d3d5cba8c520e3f10a0",
+      "5c6e2e2a6e41c374921717735a53fa8cd6c4a03163f70f9d42244479e0d424e3"
+    ]
+  },
+  {
+    "images": 8,
+    "turns": 3,
+    "http": 200,
+    "answer": "red, blue, green, yellow, purple, orange, white, black",
+    "expected": [
+      "red",
+      "blue",
+      "green",
+      "yellow",
+      "purple",
+      "orange",
+      "white",
+      "black"
+    ],
+    "matches_in_order": true,
+    "elapsed_s": 2.7721080409828573,
+    "usage": {
+      "prompt_tokens": 165,
+      "total_tokens": 314,
+      "completion_tokens": 149,
+      "completion_tokens_details": {
+        "reasoning_tokens": 127
+      }
+    },
+    "png_sha256": [
+      "d604ac3e8f1fe726604d8e9e1eb3c8e6f8bbb961723e2d3d5cba8c520e3f10a0",
+      "5c6e2e2a6e41c374921717735a53fa8cd6c4a03163f70f9d42244479e0d424e3",
+      "6cf98b638241c271fa9f617e6e9d3855796a1dac71eaf6727eb83dddfd6e864f",
+      "b410f77fe9f2acccbb4381bf7041d11e579dc6aa23dd9f3b081abc449d9bc596",
+      "7318cd6a559a2d75d5dd51fd198b3f528612049c2f1f26e51747aba5a426843a",
+      "65142df405b7e0524241c8f8082247d7553bd30e23d0c46bfbc24428aa946137",
+      "dd038a46d73f39df3b21c8dbfc3a072250e0671393a16084fb953fced88c8035",
+      "4d44ee812ca1d4857d45d173b905f85ad223399c3976d374d063c1af4fd53507"
+    ]
+  }
+]

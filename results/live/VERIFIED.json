@@ -1,0 +1,71 @@
+{
+  "complete": true,
+  "verdict": "deployed",
+  "profile": {
+    "mode": "vllm-dspark",
+    "profile": "humming-q8"
+  },
+  "model": "thinkingmachines/Inkling-2-Mini",
+  "revision": "ed40e7da625f594fc9c4990f5f66be24873c22d7",
+  "context": {
+    "over_limit": {
+      "http": 400,
+      "submitted_prompt_tokens": 262145,
+      "reported_prompt_tokens": null,
+      "completion_tokens": null,
+      "text": null,
+      "seconds": 0.04404117097146809,
+      "error": "{'error': {'message': \"This model's maximum context length is 262144 tokens. However, your prompt contains at least 262145 input tokens, which exceeds this limit even without any output tokens. Please reduce the length of the input prompt. (parameter=input_tokens, value=262145)\", 'type': 'BadRequestError', 'param': 'input_tokens', 'code': 400}}"
+    },
+    "near_limit": {
+      "http": 200,
+      "submitted_prompt_tokens": 262016,
+      "reported_prompt_tokens": 262016,
+      "completion_tokens": 1,
+      "text": " sky",
+      "seconds": 128.6227515229839
+    }
+  },
+  "backend": "humming",
+  "draft_quant": "int8 (head, fold, layers)",
+  "gemv_tiles": "16x512 for N>=4096",
+  "kernel_files": {
+    "gemv.py": "99fcb6ac2fef2dd33ceff3cf4022eab65db00320b5c3fd4b6b54e4ecd8df1974",
+    "gemv_q8.py": "883e22e75083c414fb9b8a3def67ef2b57e69f9907991dcbcdf97bd25700a982",
+    "dspark.py": "0832e629e569307cc2f34c67471905ee1ffa1f4bbf3def3272fc237b5da9717f"
+  },
+  "max_model_len": 262144,
+  "median_decode_tps": 66.72350378902179,
+  "median_ttft_s": 0.1637162190163508,
+  "case_medians": {
+    "code": 73.2857673946199,
+    "prose": 45.54570406185336,
+    "math": 66.72350378902179
+  },
+  "matched_stock_hashes": 9,
+  "matched_ab_int8L_hashes": 9,
+  "authenticated_bridge": 200,
+  "vision_passed": [
+    2,
+    8
+  ],
+  "canary_answer": "408",
+  "service": "inkling2-mini.service",
+  "enabled": "enabled",
+  "health_http": 200,
+  "container_image": "sha256:f95362fc89f98d28a429d7047caa9090ccab881e1c4ffd0385f643627211c6de",
+  "main_recipe": "<recipe root on the test machine>",
+  "kernel_work": "<kernel work dir on the test machine>",
+  "memory": {
+    "ts": 1795268424.1414468,
+    "available": 42779410432,
+    "swap_used": 0,
+    "min_available": 42587295744,
+    "baseline_swap": 0,
+    "max_swap": 0,
+    "mode": "vllm-dspark",
+    "profile": "humming-q8",
+    "container_swap": 0,
+    "container_swap_limit": 0
+  }
+}

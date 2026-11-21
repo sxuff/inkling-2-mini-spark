@@ -1,0 +1,19 @@
+15:21:12 1. download.py verification on a hard-linked copy of the checkpoint
+ok   tokenizer.json
+ok   tokenizer_config.json
+verified 13 files in <test dir>/model
+15:21:22 2. stop live service, serve.sh q8 with an EMPTY cache
+15:25:13 q8 ready after 230 s (cold cache)
+median 66.62 tok/s | code 73.28 prose 45.48 math 66.62 | accept 3.156 | canary '408' | hashes 9/9 | vision 2:ok 8:ok
+15:26:07 3. align live kernels with the repo files (comment-only change) and re-pin runtime.py
+gemv.py 99fcb6ac2fef -> a95c674196e9
+gemv_q8.py 883e22e75083 -> b3deb328d410
+dspark.py 0832e629e569 -> 6eb1e24f9d30
+runtime argv ok, 100 args
+15:28:32 live restarted with repo kernel files
+15:28:32   dspark.py in container == repo: yes
+15:28:32   ops/gemv.py in container == repo: yes
+15:28:32   ops/gemv_q8.py in container == repo: yes
+median 66.38 tok/s | code 73.14 prose 45.34 math 66.38 | accept 3.156 | canary '408' | hashes 9/9 | vision 2:ok 8:ok
+15:29:07 done
+15:29:07 live service: active, health 200

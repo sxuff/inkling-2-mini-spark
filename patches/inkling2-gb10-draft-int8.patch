@@ -1,0 +1,345 @@
+--- a/vllm/models/inkling2/nvidia/dspark.py
++++ b/vllm/models/inkling2/nvidia/dspark.py
+@@ -1,10 +1,13 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Modified for the inkling-2-mini-gb10 recipe (2026-11-21): optional 8-bit copies of the
++# draft-only weights (shared LM head, Markov fold, draft layers), INKLING2_DRAFT_QUANT.
+ """Inkling2 DSpark draft (`mtp.safetensors`): an anchor plus mask block run
+ through a small dense transformer over DFlare-mixed target-feature K/V, then a
+ recurrent (`rnn_hidden`) Markov head. Numerics follow the reference
+ implementation's draft (flashinfer RMSNorms, bf16 logits)."""
+ 
++import os
+ from collections.abc import Iterable
+ from typing import cast
+ 
+@@ -47,9 +50,21 @@
+     rope_,
+     silu_and_mul,
+ )
++from .ops.gemv_q8 import MAX_M as Q8_MAX_M
++from .ops.gemv_q8 import draft_quant_mode, gemv_q8, quantize_rows
+ from .ops.linear import linear
+ 
+ 
++def _draft_linear(x: torch.Tensor, module: nn.Module) -> torch.Tensor:
++    """`linear` on the module's bf16 weight, or on its 8-bit copy (draft-only
++    weights, `INKLING2_DRAFT_QUANT`) for low-M batches. The target verifies
++    every draft token with its own weights, so only acceptance can change."""
++    q8 = getattr(module, "q8", None)
++    if q8 is not None and 0 < x.numel() // x.shape[-1] <= Q8_MAX_M:
++        return gemv_q8(x, *q8)
++    return linear(x, module.weight)
++
++
+ class _RMSNorm(nn.Module):
+     def __init__(self, hidden_size: int, eps: float) -> None:
+         super().__init__()
+@@ -194,7 +209,7 @@
+     def forward(
+         self, positions: torch.Tensor, x: torch.Tensor, cos_sin_cache: torch.Tensor
+     ) -> torch.Tensor:
+-        qkv = linear(x, self.qkv_proj.weight)
++        qkv = _draft_linear(x, self.qkv_proj)
+         qk_norm_rope_(
+             qkv,
+             positions,
+@@ -244,7 +259,7 @@
+                 window=self.window,
+                 num_splits=num_splits,
+             )
+-        return linear(out, self.o_proj.weight)
++        return _draft_linear(out, self.o_proj)
+ 
+     def store_context_kv(
+         self,
+@@ -253,7 +268,7 @@
+         cos_sin_cache: torch.Tensor,
+         slot_mapping: torch.Tensor | None,
+     ) -> None:
+-        k, v = linear(context, self.kv_proj_ctx.weight).split(
++        k, v = _draft_linear(context, self.kv_proj_ctx).split(
+             [self.kv_size, self.kv_size], -1
+         )
+         k = self.k_norm_ctx(k.reshape(-1, self.head_dim))
+@@ -282,8 +297,8 @@
+         )
+ 
+     def forward(self, x: torch.Tensor) -> torch.Tensor:
+-        x = silu_and_mul(linear(x, self.gate_up_proj.weight))
+-        return linear(x, self.down_proj.weight)
++        x = silu_and_mul(_draft_linear(x, self.gate_up_proj))
++        return _draft_linear(x, self.down_proj)
+ 
+ 
+ class Inkling2DraftLayer(nn.Module):
+@@ -343,6 +358,8 @@
+         self.fold_weight: torch.Tensor | None = None
+         self.fold_bias: torch.Tensor | None = None
+         self.rnn_bias: torch.Tensor | None = None
++        # 8-bit copy of fold_weight (INKLING2_DRAFT_QUANT): (values, row scales).
++        self.fold_q8: tuple[torch.Tensor, torch.Tensor] | None = None
+ 
+     @torch.no_grad()
+     def fold(self, lm_head_weight: torch.Tensor) -> None:
+@@ -382,6 +399,8 @@
+         weight = self.rnn_proj.weight[:, : 2 * self.markov_rank]
+         raw = torch.addmm(context, inputs, weight.T, out_dtype=torch.float32)
+         state, latent = markov_gate(raw, state)
++        if self.fold_q8 is not None and latent.shape[0] <= Q8_MAX_M:
++            return state, gemv_q8(latent, *self.fold_q8, bias=self.fold_bias)
+         return state, torch.addmm(self.fold_bias, latent, self.fold_weight.T)
+ 
+ 
+@@ -481,6 +500,8 @@
+             config, vllm_config.model_config.max_model_len, f"{prefix}model"
+         )
+         self.lm_head: nn.Module | None = None
++        # 8-bit copy of the shared LM head for the draft's base logits.
++        self.lm_head_q8: tuple[torch.Tensor, torch.Tensor] | None = None
+ 
+     @torch.no_grad()
+     def attach_target(self, target_model: nn.Module) -> None:
+@@ -502,6 +523,22 @@
+         head = self.model.markov_head
+         assert head.rnn_bias is not None
+         head.fold(self.lm_head.weight)
++        mode = draft_quant_mode()
++        if mode is not None:
++            self.lm_head_q8 = quantize_rows(self.lm_head.weight, mode, self.lm_head_q8)
++            assert head.fold_weight is not None
++            head.fold_q8 = quantize_rows(head.fold_weight, mode, head.fold_q8)
++            if os.environ.get("INKLING2_DRAFT_QUANT_LAYERS", "0") == "1":
++                for layer in self.model.layers:
++                    attn, mlp = layer.self_attn, layer.mlp
++                    for mod in (
++                        attn.qkv_proj,
++                        attn.o_proj,
++                        attn.kv_proj_ctx,
++                        mlp.gate_up_proj,
++                        mlp.down_proj,
++                    ):
++                        mod.q8 = quantize_rows(mod.weight, mode, getattr(mod, "q8", None))
+         head.rnn_bias.copy_(head.rnn_proj.bias)
+         self.model.fuse_alpha.copy_(
+             torch.softmax(self.model.fuse_weight.float(), dim=-1)
+@@ -542,8 +579,11 @@
+         return self.model(input_ids, positions)
+ 
+     def compute_base_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+-        """TP-local bf16 base logits (bf16 GEMM, as the reference)."""
++        """TP-local bf16 base logits (bf16 GEMM, as the reference; or the
++        8-bit head copy with INKLING2_DRAFT_QUANT)."""
+         assert self.lm_head is not None
++        if self.lm_head_q8 is not None and 0 < hidden_states.shape[0] <= Q8_MAX_M:
++            return gemv_q8(hidden_states, *self.lm_head_q8)
+         return linear(hidden_states, self.lm_head.weight)
+ 
+     def markov_step(
+--- a/vllm/models/inkling2/nvidia/ops/gemv.py
++++ b/vllm/models/inkling2/nvidia/ops/gemv.py
+@@ -1,7 +1,11 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Modified for the inkling-2-mini-gb10 recipe (2026-11-21): 16x512 tiles for N >= 4096
++# (bit-identical outputs), INKLING2_GEMV_TILE.
+ """Low-M BF16 tensor-core projections for SM120/SM121."""
+ 
++import os
++
+ import torch
+ 
+ from vllm.platforms import current_platform
+@@ -9,6 +13,10 @@
+ 
+ MAX_M = 16
+ _BN, _BK = 32, 256
++# Wide projections stream 16-column x 512-deep tiles: the same per-column
++# K-ordered tensor-core chain (bit-identical outputs), ~3-7% closer to HBM
++# bandwidth on GB10 for N >= 4096.
++_WIDE_N = 4096 if os.environ.get("INKLING2_GEMV_TILE", "1") != "0" else 1 << 62
+ 
+ 
+ @triton.jit
+@@ -69,7 +77,8 @@
+     if out is None:
+         out = torch.empty((m, n), device=x.device, dtype=out_dtype or x.dtype)
+     if m:
+-        _gemv_kernel[(triton.cdiv(n, _BN),)](
++        bn, bk, stages = (16, 512, 3) if n >= _WIDE_N else (_BN, _BK, 3)
++        _gemv_kernel[(triton.cdiv(n, bn),)](
+             x2,
+             weight,
+             bias,
+@@ -81,10 +90,11 @@
+             weight.stride(0),
+             out.stride(0),
+             HAS_BIAS=bias is not None,
+-            BN=_BN,
+-            BK=_BK,
++            BN=bn,
++            BK=bk,
+             MP=16,
+             num_warps=4,
++            num_stages=stages,
+         )
+     return out.view(*lead, n)
+ 
+--- /dev/null
++++ b/vllm/models/inkling2/nvidia/ops/gemv_q8.py
+@@ -0,0 +1,154 @@
++# SPDX-License-Identifier: Apache-2.0
++# New file for the inkling-2-mini-gb10 recipe (2026-11-21), built on vLLM's Triton utilities.
++"""Weight-only 8-bit (int8 or fp8-e4m3, per-output-row fp32 scale) low-M
++projections for SM12x drafts: bf16 `x` [M, K] @ dequant(w) [N, K].T.
++
++The 8-bit values convert exactly to bf16, so each tile runs the same bf16
++tensor-core dot as the bf16 GEMV with half the weight bytes; the row scale
++(and optional bias) is applied once to the fp32 accumulator.
++"""
++
++import os
++
++import torch
++
++from vllm.triton_utils import tl, triton
++
++MAX_M = 64
++
++
++def draft_quant_mode() -> str | None:
++    """INKLING2_DRAFT_QUANT: int8 | fp8 | off (default off)."""
++    mode = os.environ.get("INKLING2_DRAFT_QUANT", "off").lower()
++    if mode in ("", "0", "off", "none", "bf16"):
++        return None
++    if mode not in ("int8", "fp8"):
++        raise ValueError(f"INKLING2_DRAFT_QUANT={mode!r}: expected int8, fp8 or off")
++    return mode
++
++
++@torch.no_grad()
++def quantize_rows(
++    weight: torch.Tensor,
++    mode: str,
++    out: tuple[torch.Tensor, torch.Tensor] | None = None,
++    chunk: int = 8192,
++) -> tuple[torch.Tensor, torch.Tensor]:
++    """Per-row symmetric quantization of bf16 `weight` [N, K]; refills `out`
++    in place when given (CUDA graphs keep pointing at it)."""
++    n, k = weight.shape
++    if out is None:
++        dtype = torch.int8 if mode == "int8" else torch.float8_e4m3fn
++        out = (
++            torch.empty((n, k), dtype=dtype, device=weight.device),
++            torch.empty((n,), dtype=torch.float32, device=weight.device),
++        )
++    q, scale = out
++    qmax = 127.0 if mode == "int8" else 448.0
++    for start in range(0, n, chunk):
++        rows = weight[start : start + chunk].float()
++        s = rows.abs().amax(1).clamp_min(1e-30) / qmax
++        v = rows / s[:, None]
++        if mode == "int8":
++            v = v.round_().clamp_(-127, 127)
++        else:
++            v = v.clamp_(-448.0, 448.0)
++        q[start : start + chunk].copy_(v.to(q.dtype))
++        scale[start : start + chunk].copy_(s)
++    return q, scale
++
++
++@triton.jit
++def _gemv_q8_kernel(
++    X,
++    W,
++    S,
++    B,
++    Y,
++    M,
++    N,
++    K,
++    SX,
++    SW,
++    SY,
++    HAS_BIAS: tl.constexpr,
++    BN: tl.constexpr,
++    BK: tl.constexpr,
++    MP: tl.constexpr,
++):
++    pid = tl.program_id(0)
++    cols = pid * BN + tl.arange(0, BN)
++    rows = tl.program_id(1) * MP + tl.arange(0, MP)
++    acc = tl.zeros((MP, BN), tl.float32)
++    for k0 in range(0, K, BK):
++        ks = k0 + tl.arange(0, BK)
++        w = tl.load(
++            W + cols[None, :].to(tl.int64) * SW + ks[:, None],
++            (cols[None, :] < N) & (ks[:, None] < K),
++            other=0.0,
++        )
++        x = tl.load(
++            X + rows[:, None] * SX + ks[None, :],
++            (rows[:, None] < M) & (ks[None, :] < K),
++            other=0,
++        )
++        acc += tl.dot(x, w.to(tl.bfloat16))
++    acc = acc * tl.load(S + cols, cols < N, other=0)[None, :]
++    if HAS_BIAS:
++        acc += tl.load(B + cols, cols < N, other=0).to(tl.float32)[None, :]
++    tl.store(
++        Y + rows[:, None] * SY + cols[None, :],
++        acc.to(Y.dtype.element_ty),
++        (rows[:, None] < M) & (cols[None, :] < N),
++    )
++
++
++def _config(n: int, k: int) -> tuple[int, int, int, int]:
++    if k <= 256:
++        return 64, 256, 4, 3
++    if n >= 16384:
++        return 32, 512, 4, 3
++    return 32, 256, 4, 4
++
++
++def gemv_q8(
++    x: torch.Tensor,
++    q: torch.Tensor,
++    scale: torch.Tensor,
++    bias: torch.Tensor | None = None,
++    out_dtype: torch.dtype | None = None,
++) -> torch.Tensor:
++    """`(x @ (q * scale[:, None]).T + bias)` in `out_dtype` (default x's)."""
++    lead = x.shape[:-1]
++    x2 = x.reshape(-1, x.shape[-1])
++    if x2.stride(-1) != 1:
++        x2 = x2.contiguous()
++    m, k = x2.shape
++    n = q.shape[0]
++    assert q.shape[1] == k and q.stride(-1) == 1
++    out = torch.empty((m, n), device=x.device, dtype=out_dtype or x.dtype)
++    if m:
++        bn, bk, warps, stages = _config(n, k)
++        mp = 16 if m <= 16 else 32 if m <= 32 else 64
++        if mp > 16:
++            bn, bk, warps, stages = 32, min(bk, 256), 4, 2
++        _gemv_q8_kernel[(triton.cdiv(n, bn), triton.cdiv(m, mp))](
++            x2,
++            q,
++            scale,
++            bias,
++            out,
++            m,
++            n,
++            k,
++            x2.stride(0),
++            q.stride(0),
++            out.stride(0),
++            HAS_BIAS=bias is not None,
++            BN=bn,
++            BK=bk,
++            MP=mp,
++            num_warps=warps,
++            num_stages=stages,
++        )
++    return out.view(*lead, n)

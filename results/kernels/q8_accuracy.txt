@@ -1,0 +1,17 @@
+hidden_out keys ['markov_head.hidden_out.bias', 'markov_head.hidden_out.weight']
+lm torch.Size([201024, 2304]) torch.bfloat16
+int8 lm_head emb_like M=7 rel 0.0083 KL 0.00004 top1 1.000
+int8 lm_head emb_like M=56 rel 0.0086 KL 0.00004 top1 0.982
+int8 lm_head gauss M=7 rel 0.0091 KL 0.00004 top1 1.000
+int8 lm_head gauss M=56 rel 0.0092 KL 0.00004 top1 0.929
+int8 fold rel 0.0087
+fp8 lm_head emb_like M=7 rel 0.0238 KL 0.00036 top1 1.000
+fp8 lm_head emb_like M=56 rel 0.0248 KL 0.00035 top1 0.911
+fp8 lm_head gauss M=7 rel 0.0263 KL 0.00035 top1 1.000
+fp8 lm_head gauss M=56 rel 0.0266 KL 0.00035 top1 0.875
+fp8 fold rel 0.0292
+lm_head int8 M=7 1779.8 us
+lm_head int8 M=14 1819.5 us
+lm_head int8 M=56 1908.0 us
+fold int8 M=1 204.5 us
+fold bf16 addmm M=1 403.9 us
