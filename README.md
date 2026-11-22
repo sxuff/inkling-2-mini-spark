@@ -1,4 +1,4 @@
-# Inkling 2 Mini on a single DGX Spark (GB10)
+# Inkling 2 Mini on a single DGX Spark
 
 ![Inkling 2 Mini on one GB10: 66.7 tok/s median decode, same outputs as stock vLLM](assets/card.png)
 
