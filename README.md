@@ -15,8 +15,8 @@ This recipe serves [Inkling 2 Mini](https://huggingface.co/thinkingmachines/Inkl
 You need one GB10 with Docker and the NVIDIA container runtime, about 50 GB of free disk and about 75 GB of free unified memory. The server takes 61% of the GPU memory, which leaves room for a desktop session.
 
 ```bash
-git clone https://github.com/sxuff/inkling-2-mini-gb10
-cd inkling-2-mini-gb10
+git clone https://github.com/sxuff/inkling-2-mini-spark
+cd inkling-2-mini-spark
 python3 scripts/download.py   # pinned checkpoint (20.2 GB) into ~/models, every file verified
 ./scripts/serve.sh            # q8 profile on 127.0.0.1:8020
 ```
