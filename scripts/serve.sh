@@ -48,6 +48,7 @@ args=(
   --tool-call-parser inkling
   --limit-mm-per-prompt '{"image":262144,"video":0}'
   --skip-mm-profiling
+  --safetensors-load-strategy eager
   --speculative-config '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
   --host 127.0.0.1
   --port "$PORT"

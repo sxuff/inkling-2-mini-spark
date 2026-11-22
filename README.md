@@ -21,7 +21,7 @@ python3 scripts/download.py   # pinned checkpoint (20.2 GB) into ~/models, every
 ./scripts/serve.sh            # q8 profile on 127.0.0.1:8020
 ```
 
-The image is about 27 GB, and `serve.sh` pulls it on first use. With the image already pulled and an empty cache, the first start took 230 s on the test machine. Later starts reuse `~/.cache/inkling2-mini-vllm` and take about 2.5 minutes, most of it loading weights.
+The image is about 27 GB, and `serve.sh` pulls it on first use. With the image already pulled and an empty cache, the first start took 230 s on the test machine. Later starts reuse `~/.cache/inkling2-mini-vllm` and take about 45 s, because `serve.sh` reads the checkpoint in one pass instead of memory-mapping it (see Startup below).
 
 ```bash
 curl -s http://127.0.0.1:8020/v1/chat/completions -H "Content-Type: application/json" -d '{
@@ -54,6 +54,7 @@ All numbers are single-stream decode after the first token. Each run sends 9 ser
 - **Tokens per step** is the mean number of tokens each speculative step commits (1 + accepted drafts). The INT8 drafter accepts slightly more, not less.
 - **Memory:** the INT8 copies add 0.74 GiB, so the KV cache shrinks from 717,758 to 703,530 tokens. That is still 2.68 full 262K requests.
 - **Clean-clone check:** `download.py` verification, then `serve.sh q8` from a fresh copy of this repository with an empty cache: 66.62 tok/s, all 9 hashes equal to stock, both vision checks passed (`results/recipe-test/`).
+- **Startup:** `--safetensors-load-strategy eager` cuts a warm start from 127–155 s to 42–45 s (two runs, five interleaved controls). Weight loading drops from 100 s to 14 s; decode, prefill, memory and a 102K-token needle test (3/3 found) are unchanged. On the live service the restart took 47 s. This came from a run of [0xSero](https://github.com/0xSero)'s [inference-optimisation skill](https://github.com/sybil-solutions/inference-optimisation-skill); the same run ruled out larger prefill chunks (8K within noise, 16K 14% slower on a 25K-token prompt) and async scheduling (no change). The ledger is in `results/startup/`.
 - **Raw data:** `results/ab/` has every request, with timings, output text and hashes. `results/live/` has the promotion checks: bench, vision, and context limit.
 
 ## How it works
@@ -101,7 +102,7 @@ Measured on the GB10 (`results/kernels/`):
 | Model | `thinkingmachines/Inkling-2-Mini` @ `ed40e7da625f594fc9c4990f5f66be24873c22d7`: native NVFP4 experts (layers 0–19), MXFP8 experts (20–23), BF16 everything else, bundled DSpark draft |
 | Runtime | `vllm/vllm-openai` @ `sha256:ecdf0ccc663d86332459f5a50a38c30861a5079bc3924aa08fdc657ef10dd648` (ARM64; vLLM 0.1.dev25855+g7cb5dae22, PyTorch 2.14, Triton 3.8) |
 | Speculation | `dspark`, 7 tokens (fixed by the checkpoint's block size), probabilistic draft sampling |
-| Serving | `--moe-backend humming --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.61` |
+| Serving | `--moe-backend humming --safetensors-load-strategy eager --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.61` |
 | Recipe env | `INKLING2_DRAFT_QUANT=int8`, `INKLING2_DRAFT_QUANT_LAYERS=1` |
 
 ## Reproduce
@@ -139,3 +140,5 @@ python3 demo/record.py demo.mp4 "max=1500"   # streams from 127.0.0.1:8020 (UPST
 ## License and credits
 
 Apache-2.0 (`LICENSE`). The files in `overlay/` are modified from, or built on, vLLM (Apache-2.0) and carry change notices. The Inkling 2 Mini weights are Apache-2.0 and are not included here. See `NOTICE.md`.
+
+The startup change was found with [0xSero](https://github.com/0xSero)'s [inference-optimisation skill](https://github.com/sybil-solutions/inference-optimisation-skill) (MIT): its ceiling-first, control-interleaved A/B method, bench harness and memory watchdog ran unchanged on the GB10.
