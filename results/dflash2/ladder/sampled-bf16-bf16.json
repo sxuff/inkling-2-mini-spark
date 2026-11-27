@@ -1,0 +1,38 @@
+{
+  "mem_before": {
+    "mem_avail_gib": 35.03,
+    "swap_used_mib": 0.0
+  },
+  "code_T0_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.21895843802485615,
+    "decode_tps": 57.032741142308865,
+    "content_head": "Below is a self-contained reference implementation. It's a solid, testable foundation \u2014 not a drop-in replacement for `httpx`/`aiohttp` in high-throughput production systems (it doesn't do TLS, HTTP/2"
+  },
+  "code_T07_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.17163481994066387,
+    "decode_tps": 68.5682358872229,
+    "content_head": "Below is a self-contained implementation using only the standard library (`asyncio`, `unittest`). It speaks raw HTTP/1.1 over persistent connections, enforces per-host concurrency limits, retries idem"
+  },
+  "code_T10_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.22704356396570802,
+    "decode_tps": 48.31981249798073,
+    "content_head": "Below is a self-contained async HTTP/1.1 pool (no third-party dependencies) plus a unittest suite. It uses raw `asyncio` streams, so it's fully inspectable.\n\n## `http_pool.py`\n\n```python\n\"\"\"Production"
+  },
+  "prose_T07_512": {
+    "prompt_tokens": 54,
+    "completion_tokens": 512,
+    "ttft_s": 0.22886918298900127,
+    "decode_tps": 42.4266889311565,
+    "content_head": "The rain had been working the window all afternoon, a fine, patient drumming against the office\u2019s north wall. Mara and Devon sat on folding chairs in the back storage room, knees nearly touching a 198"
+  },
+  "mem_after": {
+    "mem_avail_gib": 36.04,
+    "swap_used_mib": 0.0
+  }
+}

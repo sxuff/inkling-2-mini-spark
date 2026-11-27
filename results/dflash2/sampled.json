@@ -1,0 +1,38 @@
+{
+  "mem_before": {
+    "mem_avail_gib": 36.24,
+    "swap_used_mib": 0.0
+  },
+  "code_T0_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.20883329794742167,
+    "decode_tps": 62.87227012212204,
+    "content_head": "Below is a self-contained reference implementation. It's a solid, testable foundation \u2014 not a drop-in replacement for `httpx`/`aiohttp` in high-throughput production systems (it doesn't do TLS, HTTP/2"
+  },
+  "code_T07_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.1643153940094635,
+    "decode_tps": 79.47903136090801,
+    "content_head": "Below is a complete, self-contained implementation. It's HTTP/1.1 only (no TLS), uses `asyncio` streams, and is designed to be testable with `unittest` + local servers.\n\n## `http_pool.py`\n\n```python\n\""
+  },
+  "code_T10_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.20975559507496655,
+    "decode_tps": 71.84586846622953,
+    "content_head": "Here's a complete, self-contained implementation. It uses only the standard library (`asyncio`), so it runs anywhere Python 3.8+ does.\n\n## `http_pool.py`\n\n```python\n\"\"\"Async HTTP/1.1 connection pool w"
+  },
+  "prose_T07_512": {
+    "prompt_tokens": 54,
+    "completion_tokens": 512,
+    "ttft_s": 0.20727416104637086,
+    "decode_tps": 45.69979078820897,
+    "content_head": "The rain came sideways against the glass of the fourth-floor break room, drumming on the awning like a metronome someone had left running. Mara had dragged the synthesizer in from the storage closet j"
+  },
+  "mem_after": {
+    "mem_avail_gib": 36.21,
+    "swap_used_mib": 0.0
+  }
+}

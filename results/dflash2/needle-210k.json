@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "prompt_tokens": 210386,
+  "completion_tokens": 126,
+  "ttft_s": 95.29,
+  "prefill_tps": 2207.9,
+  "decode_tps": 39.03,
+  "finish": "stop",
+  "answer": "ORION-7492-DELTA",
+  "reasoning_tail": "n-ish? Actually it's provided in the user message as an archive note. We should answer based on provided data. The code is in the prompt, not a real secret. Need reply only code. Ensure no extra text.",
+  "mem_before": {
+    "mem_avail_gib": 36.49,
+    "swap_used_mib": 0.0
+  },
+  "mem_after": {
+    "mem_avail_gib": 35.11,
+    "swap_used_mib": 0.0
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "mem_before": {
+    "mem_avail_gib": 35.74,
+    "swap_used_mib": 0.0
+  },
+  "code_T0_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.21224449889268726,
+    "decode_tps": 60.88059864555181,
+    "content_head": "Below is a self-contained reference implementation. It's a solid, testable foundation \u2014 not a drop-in replacement for `httpx`/`aiohttp` in high-throughput production systems (it doesn't do TLS, HTTP/2"
+  },
+  "code_T07_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.16965217899996787,
+    "decode_tps": 54.709111515937344,
+    "content_head": "Below is a complete, self-contained implementation using only the Python 3 standard library (`asyncio`). It speaks real HTTP/1.1 over raw streams, supports keep-alive, per-host concurrency limits, ret"
+  },
+  "code_T10_1024": {
+    "prompt_tokens": 64,
+    "completion_tokens": 1024,
+    "ttft_s": 0.2219186519505456,
+    "decode_tps": 63.68258260191966,
+    "content_head": "Below is a self-contained implementation (standard library only) plus a `unittest` suite. It speaks raw HTTP/1.1 over `asyncio.open_connection`, keeps alive idle connections, enforces per-host concurr"
+  },
+  "prose_T07_512": {
+    "prompt_tokens": 54,
+    "completion_tokens": 512,
+    "ttft_s": 0.2106308259535581,
+    "decode_tps": 48.011057482473895,
+    "content_head": "The rain came down like someone had thrown gravel against the windows. Mara stood at the workbench with a screwdriver in her teeth, watching the synthesizer\u2014an amber-cased machine with a crooked keybo"
+  },
+  "needle_200k": {
+    "ok": false,
+    "prompt_tokens": 210386,
+    "ttft_s": 97.21,
+    "prefill_tps": 2164.2,
+    "decode_tps": 34.71,
+    "answer": ""
+  },
+  "mem_after": {
+    "mem_avail_gib": 34.34,
+    "swap_used_mib": 0.0
+  }
+}
