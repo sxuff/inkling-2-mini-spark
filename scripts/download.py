@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
-"""Download the pinned Inkling 2 Mini checkpoint and verify every file (size, and SHA-256 for LFS files).
+"""Download a pinned checkpoint and verify every file (size, and SHA-256 for LFS files).
 
-usage: python3 scripts/download.py [DEST]   (default ~/models/Inkling-2-Mini-ed40e7d)
-Needs curl. Resumes partial files. About 20.2 GB.
+usage: python3 scripts/download.py [DEST]             Inkling 2 Mini, about 20.2 GB
+                                                      (default ~/models/Inkling-2-Mini-ed40e7d)
+       python3 scripts/download.py --dflash2 [DEST]   DFlash2 draft for the dflash2 profile, about 1 GB
+                                                      (default ~/models/Inkling-2-Mini-DFlash2-4f9088e)
+Needs curl. Resumes partial files. HF_TOKEN is sent if set.
 """
 import hashlib, json, os, pathlib, subprocess, sys, urllib.parse, urllib.request
 
-REPO = "thinkingmachines/Inkling-2-Mini"
-REV = "ed40e7da625f594fc9c4990f5f66be24873c22d7"
+PINS = {
+    "target": ("thinkingmachines/Inkling-2-Mini", "ed40e7da625f594fc9c4990f5f66be24873c22d7", "Inkling-2-Mini"),
+    "dflash2": ("incoai/Inkling-2-Mini-DFlash2", "4f9088ea66c21f2b99ed657d1941c306b03e84d2", "Inkling-2-Mini-DFlash2"),
+}
 BASE = "https://huggingface.co"
-dest = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path.home() / f"models/Inkling-2-Mini-{REV[:7]}")
+
+argv = sys.argv[1:]
+which = "target"
+if argv and argv[0] == "--dflash2":
+    which, argv = "dflash2", argv[1:]
+REPO, REV, NAME = PINS[which]
+dest = pathlib.Path(argv[0] if argv else pathlib.Path.home() / f"models/{NAME}-{REV[:7]}")
 dest.mkdir(parents=True, exist_ok=True)
 headers = {"Authorization": f"Bearer {os.environ['HF_TOKEN']}"} if os.environ.get("HF_TOKEN") else {}
 

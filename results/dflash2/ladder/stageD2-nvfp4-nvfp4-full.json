@@ -1,0 +1,68 @@
+{
+  "base": "http://127.0.0.1:19025",
+  "model": "thinkingmachines/Inkling-2-Mini",
+  "canary": {
+    "ttft_s": 0.13971639901865274,
+    "wall_s": 0.5289722210727632,
+    "decode_tps": 113.08074525109619,
+    "completion_tokens": 45,
+    "prompt_tokens": 29,
+    "finish": "stop",
+    "output_sha256": "2a526a037b336ca5d215c48305fcd37eb0585c5fbce81889c7f11c2d9afa6fe1",
+    "text_head": "The user wants only the integer. Compute 17*24 = 17*20 + 17*4 = 340 + 68 = 408. Need final only integer. | 408"
+  },
+  "prefill": [
+    {
+      "target": 4096,
+      "prompt_tokens": 10008,
+      "ttft_s": 2.6032515940023586,
+      "prefill_tps": 3844.4228836957095
+    },
+    {
+      "target": 8192,
+      "prompt_tokens": 18801,
+      "ttft_s": 4.915485384059139,
+      "prefill_tps": 3824.851165455892
+    },
+    {
+      "target": 32768,
+      "prompt_tokens": 72849,
+      "ttft_s": 22.687334266025573,
+      "prefill_tps": 3210.9986632097116
+    }
+  ],
+  "conc": {
+    "4": {
+      "wall_s": 12.811935789999552,
+      "total_tokens": 1536,
+      "agg_tps": 119.88820621462494,
+      "mean_per_stream_tps": 35.96967120406531,
+      "ttft_median_s": 1.0848219620529562,
+      "ttft_p90_s": 1.0848718099296093,
+      "per_stream_tps": [
+        32.67,
+        36.47,
+        41.32,
+        33.42
+      ]
+    },
+    "8": {
+      "wall_s": 17.94530332100112,
+      "total_tokens": 3072,
+      "agg_tps": 171.18685290790734,
+      "mean_per_stream_tps": 26.78342443123536,
+      "ttft_median_s": 1.1481866394751705,
+      "ttft_p90_s": 1.1503097029635683,
+      "per_stream_tps": [
+        24.04,
+        23.76,
+        25.79,
+        23.18,
+        29.13,
+        22.81,
+        33.26,
+        32.3
+      ]
+    }
+  }
+}

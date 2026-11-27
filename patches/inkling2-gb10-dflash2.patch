@@ -1,0 +1,875 @@
+--- a/vllm/models/inkling2/nvidia/ops/gemv.py
++++ b/vllm/models/inkling2/nvidia/ops/gemv.py
+@@ -1,7 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+-# Modified for the inkling-2-mini-gb10 recipe (2026-11-21): 16x512 tiles for N >= 4096
+-# (bit-identical outputs), INKLING2_GEMV_TILE.
++# Modified for the inkling-2-mini-gb10 recipe (2026-11-27): bit-identical SM12x tiles
++# (32x512 for lm_head, 16x512 for N>=4096, 16x256 for N<=1024, 32x256 otherwise).
+ """Low-M BF16 tensor-core projections for SM120/SM121."""
+ 
+ import os
+@@ -13,9 +13,6 @@
+ 
+ MAX_M = 16
+ _BN, _BK = 32, 256
+-# Wide projections stream 16-column x 512-deep tiles: the same per-column
+-# K-ordered tensor-core chain (bit-identical outputs), ~3-7% closer to HBM
+-# bandwidth on GB10 for N >= 4096.
+ _WIDE_N = 4096 if os.environ.get("INKLING2_GEMV_TILE", "1") != "0" else 1 << 62
+ 
+ 
+@@ -77,7 +74,14 @@
+     if out is None:
+         out = torch.empty((m, n), device=x.device, dtype=out_dtype or x.dtype)
+     if m:
+-        bn, bk, stages = (16, 512, 3) if n >= _WIDE_N else (_BN, _BK, 3)
++        if n >= 65536 and _WIDE_N <= 65536:
++            bn, bk, stages = 32, 512, 3
++        elif n >= _WIDE_N:
++            bn, bk, stages = 16, 512, 3
++        elif n <= 1024 and _WIDE_N <= 4096:
++            bn, bk, stages = 16, 256, 2
++        else:
++            bn, bk, stages = _BN, _BK, 2 if _WIDE_N <= 4096 else 3
+         _gemv_kernel[(triton.cdiv(n, bn),)](
+             x2,
+             weight,
+--- /dev/null
++++ b/vllm/models/inkling2/nvidia/ops/gemv_q4.py
+@@ -0,0 +1,246 @@
++# SPDX-License-Identifier: Apache-2.0
++# Modified for the inkling-2-mini-spark recipe (2026-11-27): new file, INT4/INT8 low-M GEMVs for DFlash2 draft-only weights.
++"""Weight-only 4-bit (asymmetric per-group INT4) and 8-bit (per-row INT8)
++low-M projections for SM12x DFlash2 drafts, registered as custom torch ops
++for full CUDA graph and torch.compile compatibility.
++
++All quantized weights are draft-only copies; the target model verifies every
++draft token with untouched weights so output exactness is strictly preserved.
++"""
++
++import torch
++
++from vllm.triton_utils import tl, triton
++from vllm.utils.torch_utils import direct_register_custom_op
++
++from .gemv_q8 import MAX_M, gemv_q8, quantize_rows
++
++__all__ = [
++    "MAX_M",
++    "quantize_rows",
++    "quantize_int4_group",
++    "draft_gemv_q8",
++    "draft_gemv_q4",
++]
++
++
++@torch.no_grad()
++def quantize_int4_group(
++    weight: torch.Tensor,
++    group_size: int = 64,
++    out: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
++    chunk: int = 8192,
++) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    """Asymmetric per-group 4-bit quantization of bf16 `weight` [N, K].
++
++    Pairs of consecutive groups (2*p, 2*p+1) are packed into uint8 bytes
++    (lo nibble = even group, hi nibble = odd group) so each Triton tile loads
++    contiguous packed bytes without bit-interleaving overhead.
++    """
++    n, k = weight.shape
++    g = group_size
++    assert k % (2 * g) == 0, f"K={k} must be divisible by 2*G={2 * g}"
++    num_groups = k // g
++    if out is None:
++        out = (
++            torch.empty((n, k // 2), dtype=torch.uint8, device=weight.device),
++            torch.empty((num_groups, n), dtype=torch.bfloat16, device=weight.device),
++            torch.empty((num_groups, n), dtype=torch.bfloat16, device=weight.device),
++        )
++    q_packed, scales, zeros = out
++    for start in range(0, n, chunk):
++        end = min(start + chunk, n)
++        w = weight[start:end].float().view(end - start, num_groups, g)
++        wmin = w.amin(dim=-1)
++        wmax = w.amax(dim=-1)
++        s = ((wmax - wmin) / 15.0).clamp_min(1e-12)
++        q = (
++            ((w - wmin.unsqueeze(-1)) / s.unsqueeze(-1))
++            .round()
++            .clamp_(0, 15)
++            .to(torch.uint8)
++        )
++        q_pairs = q.view(end - start, num_groups // 2, 2, g)
++        packed = (q_pairs[:, :, 0, :] | (q_pairs[:, :, 1, :] << 4)).reshape(
++            end - start, k // 2
++        )
++        q_packed[start:end].copy_(packed)
++        scales[:, start:end].copy_(s.to(torch.bfloat16).T)
++        zeros[:, start:end].copy_(wmin.to(torch.bfloat16).T)
++    return q_packed, scales, zeros
++
++
++@triton.jit
++def _gemv_q4_kernel(
++    X,
++    W,
++    S,
++    Z,
++    B,
++    Y,
++    M,
++    N,
++    K,
++    SX,
++    SW,
++    SY,
++    HAS_BIAS: tl.constexpr,
++    BN: tl.constexpr,
++    G: tl.constexpr,
++    MP: tl.constexpr,
++):
++    pid_n = tl.program_id(0)
++    pid_m = tl.program_id(1)
++    cols = pid_n * BN + tl.arange(0, BN)
++    rows = pid_m * MP + tl.arange(0, MP)
++    col_mask = cols < N
++    row_mask = rows < M
++    ks_g = tl.arange(0, G)
++    acc = tl.zeros((MP, BN), tl.float32)
++    num_pairs = K // (2 * G)
++    for p in range(0, num_pairs):
++        k_lo = p * (2 * G) + ks_g
++        k_hi = k_lo + G
++        byte_off = p * G + ks_g
++        packed = tl.load(
++            W + cols[None, :].to(tl.int64) * SW + byte_off[:, None],
++            col_mask[None, :],
++            other=0,
++        )
++        g_lo = p * 2
++        g_hi = g_lo + 1
++        s_lo = tl.load(S + g_lo * N + cols, col_mask, other=0.0)
++        z_lo = tl.load(Z + g_lo * N + cols, col_mask, other=0.0)
++        s_hi = tl.load(S + g_hi * N + cols, col_mask, other=0.0)
++        z_hi = tl.load(Z + g_hi * N + cols, col_mask, other=0.0)
++
++        w_lo = (packed & 0x0F).to(tl.bfloat16) * s_lo[None, :] + z_lo[None, :]
++        w_hi = (packed >> 4).to(tl.bfloat16) * s_hi[None, :] + z_hi[None, :]
++
++        x_lo = tl.load(
++            X + rows[:, None] * SX + k_lo[None, :],
++            row_mask[:, None],
++            other=0.0,
++        )
++        x_hi = tl.load(
++            X + rows[:, None] * SX + k_hi[None, :],
++            row_mask[:, None],
++            other=0.0,
++        )
++        acc += tl.dot(x_lo, w_lo)
++        acc += tl.dot(x_hi, w_hi)
++
++    if HAS_BIAS:
++        acc += tl.load(B + cols, col_mask, other=0.0).to(tl.float32)[None, :]
++    tl.store(
++        Y + rows[:, None] * SY + cols[None, :],
++        acc.to(Y.dtype.element_ty),
++        row_mask[:, None] & col_mask[None, :],
++    )
++
++
++def _gemv_q4_impl(
++    x: torch.Tensor,
++    q_packed: torch.Tensor,
++    scales: torch.Tensor,
++    zeros: torch.Tensor,
++    bias: torch.Tensor | None,
++    group_size: int,
++) -> torch.Tensor:
++    lead = x.shape[:-1]
++    x2 = x.reshape(-1, x.shape[-1])
++    if x2.stride(-1) != 1:
++        x2 = x2.contiguous()
++    m, k = x2.shape
++    n = q_packed.shape[0]
++    out = torch.empty((m, n), device=x.device, dtype=x.dtype)
++    if m:
++        mp = 16 if m <= 16 else 32 if m <= 32 else 64
++        bn = 16 if n <= 4096 else 32
++        stages = 3 if (mp == 16 and group_size <= 64) else 2
++        _gemv_q4_kernel[(triton.cdiv(n, bn), triton.cdiv(m, mp))](
++            x2,
++            q_packed,
++            scales,
++            zeros,
++            bias if bias is not None else out,
++            out,
++            m,
++            n,
++            k,
++            x2.stride(0),
++            q_packed.stride(0),
++            out.stride(0),
++            HAS_BIAS=bias is not None,
++            BN=bn,
++            G=group_size,
++            MP=mp,
++            num_warps=4,
++            num_stages=stages,
++        )
++    return out.view(*lead, n)
++
++
++def _gemv_q4_fake(
++    x: torch.Tensor,
++    q_packed: torch.Tensor,
++    scales: torch.Tensor,
++    zeros: torch.Tensor,
++    bias: torch.Tensor | None,
++    group_size: int,
++) -> torch.Tensor:
++    return x.new_empty((*x.shape[:-1], q_packed.shape[0]))
++
++
++direct_register_custom_op(
++    op_name="inkling2_draft_gemv_q4",
++    op_func=_gemv_q4_impl,
++    fake_impl=_gemv_q4_fake,
++)
++
++
++def _gemv_q8_impl(
++    x: torch.Tensor,
++    q: torch.Tensor,
++    scale: torch.Tensor,
++    bias: torch.Tensor | None,
++) -> torch.Tensor:
++    return gemv_q8(x, q, scale, bias=bias)
++
++
++def _gemv_q8_fake(
++    x: torch.Tensor,
++    q: torch.Tensor,
++    scale: torch.Tensor,
++    bias: torch.Tensor | None,
++) -> torch.Tensor:
++    return x.new_empty((*x.shape[:-1], q.shape[0]))
++
++
++direct_register_custom_op(
++    op_name="inkling2_draft_gemv_q8",
++    op_func=_gemv_q8_impl,
++    fake_impl=_gemv_q8_fake,
++)
++
++
++def draft_gemv_q8(
++    x: torch.Tensor,
++    q: torch.Tensor,
++    scale: torch.Tensor,
++    bias: torch.Tensor | None = None,
++) -> torch.Tensor:
++    return torch.ops.vllm.inkling2_draft_gemv_q8(x, q, scale, bias)
++
++
++def draft_gemv_q4(
++    x: torch.Tensor,
++    q_packed: torch.Tensor,
++    scales: torch.Tensor,
++    zeros: torch.Tensor,
++    bias: torch.Tensor | None = None,
++    group_size: int = 64,
++) -> torch.Tensor:
++    return torch.ops.vllm.inkling2_draft_gemv_q4(
++        x, q_packed, scales, zeros, bias, group_size
++    )
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+@@ -1,6 +1,8 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Modified for the inkling-2-mini-spark recipe (2026-11-27): store prefill context K/V only for rows still inside the drafter's sliding window (DFLASH2_SKIP_EXPIRED_CTX).
+ import copy
++import os
+ from typing import Any
+ 
+ import torch
+@@ -228,22 +230,35 @@
+         num_reqs = input_batch.num_reqs
+         num_target_tokens = input_batch.num_tokens
+         num_context = self._num_graph_context_tokens(num_graph_reqs)
+-        self._store_hidden_states(
+-            num_target_tokens, last_hidden_states, aux_hidden_states, num_context
+-        )
+         if self._num_rejected is not None:
+             self._num_rejected[:num_reqs].copy_(num_rejected[:num_reqs])
+         if dummy_run:
++            self._store_hidden_states(
++                num_target_tokens, last_hidden_states, aux_hidden_states, num_context
++            )
+             # Dummy block tables are placeholders: write no context K/V.
+             self._context_slot_mappings[:, :num_context].fill_(PAD_SLOT_ID)
+         elif num_target_tokens <= num_context:
++            self._store_hidden_states(
++                num_target_tokens, last_hidden_states, aux_hidden_states, num_context
++            )
+             # Rows past the batch keep stale positions but write no K/V.
+             self._context_slot_mappings[:, num_target_tokens:num_context].fill_(
+                 PAD_SLOT_ID
+             )
+         else:
+-            # Prefill context beyond the graph's rows is stored before replay.
+-            self._precompute_context_kv(num_context, num_target_tokens)
++            # Stage only the first num_context rows for the FULL graph; skip expired
++            # sliding-window rows in the prefill tail [num_context:num_target_tokens].
++            self._store_hidden_states(
++                num_context, last_hidden_states, aux_hidden_states, num_context
++            )
++            self._store_and_precompute_prefill_context(
++                num_context,
++                num_target_tokens,
++                last_hidden_states,
++                aux_hidden_states,
++                dummy_run=False,
++            )
+ 
+     def load_draft_model(
+         self,
+@@ -446,6 +461,65 @@
+             context_slots,
+         )
+ 
++    def _store_and_precompute_prefill_context(
++        self,
++        start: int,
++        end: int,
++        last_hidden_states: torch.Tensor,
++        aux_hidden_states: list[torch.Tensor] | None,
++        dummy_run: bool = False,
++    ) -> None:
++        """Combine aux hidden states and store context K/V for [start, end),
++        skipping tokens already evicted outside the drafter's sliding window."""
++        if (
++            dummy_run
++            or (end - start) <= 64
++            or os.environ.get("DFLASH2_SKIP_EXPIRED_CTX", "1") != "1"
++            or len(self.draft_kv_cache_group_ids) != 1
++        ):
++            if aux_hidden_states:
++                hs = self.model.combine_hidden_states(
++                    torch.cat([h[start:end] for h in aux_hidden_states], dim=-1)
++                )
++            else:
++                hs = last_hidden_states[start:end]
++            self.hidden_states[start:end].copy_(hs)
++            self._precompute_context_kv(start, end, dummy_run)
++            return
++
++        slots = self._context_slot_mappings[0][start:end]
++        valid = torch.nonzero(slots != PAD_SLOT_ID, as_tuple=False).squeeze(-1)
++        n_valid = valid.numel()
++        if n_valid == 0:
++            return
++        if n_valid == (end - start):
++            if aux_hidden_states:
++                hs = self.model.combine_hidden_states(
++                    torch.cat([h[start:end] for h in aux_hidden_states], dim=-1)
++                )
++            else:
++                hs = last_hidden_states[start:end]
++            self.hidden_states[start:end].copy_(hs)
++            self._precompute_context_kv(start, end, False)
++            return
++
++        idx = valid + start
++        if aux_hidden_states:
++            hs = self.model.combine_hidden_states(
++                torch.cat([h[idx] for h in aux_hidden_states], dim=-1)
++            )
++        else:
++            hs = last_hidden_states[idx]
++        pos = self.context_positions[idx]
++        valid_slots = slots[valid]
++        if self._layer_group_idx is not None:
++            context_slots: torch.Tensor | list[torch.Tensor | None] = [
++                valid_slots for _ in self._layer_group_idx
++            ]
++        else:
++            context_slots = valid_slots
++        self.model.precompute_and_store_context_kv(hs, pos, context_slots)
++
+     def _store_hidden_states(
+         self,
+         num_tokens: int,
+@@ -612,10 +686,9 @@
+         if num_speculative_tokens == 0:
+             # No drafts are needed: store the context K/V to keep the drafter in
+             # sync, and skip the query pass.
+-            self._store_hidden_states(
+-                num_target_tokens, last_hidden_states, aux_hidden_states
++            self._store_and_precompute_prefill_context(
++                0, num_target_tokens, last_hidden_states, aux_hidden_states, dummy_run
+             )
+-            self._precompute_context_kv(0, num_target_tokens, dummy_run)
+             return self.draft_tokens[:num_reqs]
+ 
+         batch_sync, num_batch_tokens = (
+@@ -655,13 +728,12 @@
+                 dummy_run,
+             )
+         else:
+-            self._store_hidden_states(
+-                num_target_tokens, last_hidden_states, aux_hidden_states
+-            )
+             self.prepare_context_anchor(
+                 num_reqs, input_batch.query_start_loc, num_rejected
+             )
+-            self._precompute_context_kv(0, num_target_tokens, dummy_run)
++            self._store_and_precompute_prefill_context(
++                0, num_target_tokens, last_hidden_states, aux_hidden_states, dummy_run
++            )
+ 
+         is_full_cudagraph = batch_desc.cg_mode == CUDAGraphMode.FULL
+         # During FULL cudagraph with a model that supports decode metadata updates,
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Modified for the inkling-2-mini-spark recipe (2026-11-27): share the target's embed_norm with the draft; call prepare_draft_quant() after loading.
+ import torch.nn as nn
+ 
+ from vllm.config import VllmConfig, replace
+@@ -58,6 +59,8 @@
+     draft_inner = dflash_model.model
+ 
+     maybe_share_target_embed(dflash_model, draft_inner, target_inner)
++    if hasattr(target_inner, "embed_norm"):
++        draft_inner.embed_norm = target_inner.embed_norm
+ 
+     target_lm_head = get_target_lm_head(target_model, target_language_model)
+     draft_lm_head = getattr(dflash_model, "lm_head", None)
+@@ -72,4 +75,7 @@
+             del dflash_model.lm_head
+         dflash_model.lm_head = target_lm_head
+ 
++    if hasattr(dflash_model, "prepare_draft_quant"):
++        dflash_model.prepare_draft_quant()
++
+     return dflash_model
+--- a/vllm/model_executor/models/qwen3_dflash2.py
++++ b/vllm/model_executor/models/qwen3_dflash2.py
+@@ -1,5 +1,8 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Modified for the inkling-2-mini-spark recipe (2026-11-27): draft-only INT8/INT4/NVFP4 weight copies (DFLASH2_HEAD_QUANT, DFLASH2_BODY_QUANT), fused conv+residual+norm (DFLASH2_FUSED_OPS), selector softcap placement, embed_norm.
++
++import os
+ 
+ import torch
+ import torch.nn.functional as F
+@@ -304,6 +307,7 @@
+     RANK: tl.constexpr,
+     BLOCK_K: tl.constexpr,
+     BLOCK_R: tl.constexpr,
++    POST_SOFTCAP: tl.constexpr,
+ ):
+     position = tl.program_id(0)
+     req_idx = position // NUM_STEPS
+@@ -340,9 +344,15 @@
+     )
+     weighted = predecessors.to(tl.float32) * hidden[None, :].to(tl.float32)
+     edges = tl.dot(weighted.to(successors.dtype), tl.trans(successors))
++    val = unary[None, :].to(tl.float32) + edges.to(tl.float32)
++    if POST_SOFTCAP > 0.0:
++        z = val / POST_SOFTCAP
++        ez = tl.exp(-2.0 * tl.abs(z))
++        t = (1.0 - ez) / (1.0 + ez)
++        val = POST_SOFTCAP * tl.where(z >= 0.0, t, -t)
+     tl.store(
+         output_ptr + (position * TOP_K + k[:, None]) * TOP_K + k[None, :],
+-        unary[None, :].to(tl.float32) + edges.to(tl.float32),
++        val,
+         mask=k_mask[:, None] & k_mask[None, :],
+     )
+ 
+@@ -359,6 +369,7 @@
+     unary_logits: torch.Tensor,
+     hidden: torch.Tensor,
+     anchor_token_ids: torch.Tensor,
++    post_softcap: float = 0.0,
+ ) -> torch.Tensor:
+     output = _score_edges_output(candidate_ids)
+     num_reqs, steps, top_k = candidate_ids.shape
+@@ -380,6 +391,7 @@
+         RANK=rank,
+         BLOCK_K=max(16, triton.next_power_of_2(top_k)),
+         BLOCK_R=max(16, triton.next_power_of_2(rank)),
++        POST_SOFTCAP=float(post_softcap),
+         num_warps=4,
+     )
+     return output
+@@ -392,6 +404,7 @@
+     unary_logits: torch.Tensor,
+     hidden: torch.Tensor,
+     anchor_token_ids: torch.Tensor,
++    post_softcap: float = 0.0,
+ ) -> torch.Tensor:
+     return _score_edges_output(candidate_ids)
+ 
+@@ -411,6 +424,7 @@
+     hidden: torch.Tensor,
+     anchor_token_ids: torch.Tensor,
+     top_k: int,
++    post_softcap: float = 0.0,
+ ) -> torch.Tensor:
+     if candidate_ids.is_cuda:
+         return torch.ops.vllm.dflash2_score_edges(
+@@ -420,8 +434,9 @@
+             unary_logits,
+             hidden,
+             anchor_token_ids,
++            float(post_softcap),
+         )
+-    return _score_edges_reference(
++    scores = _score_edges_reference(
+         predecessor_table,
+         successor_table,
+         candidate_ids,
+@@ -430,6 +445,9 @@
+         anchor_token_ids,
+         top_k,
+     )
++    if post_softcap > 0.0:
++        scores = post_softcap * torch.tanh(scores / post_softcap)
++    return scores
+ 
+ 
+ def _score_edges_reference(
+@@ -496,6 +514,7 @@
+         anchor_token_ids: torch.Tensor,
+     ) -> torch.Tensor:
+         hidden = self.hidden_projection(hidden_states)
++        cap = float(getattr(self, "post_softcap", 0.0) or 0.0)
+         return _score_edges(
+             self.predecessor_codebook,
+             self.successor_codebook,
+@@ -504,7 +523,106 @@
+             hidden,
+             anchor_token_ids,
+             self.top_k,
++            post_softcap=cap,
++        )
++
++
++
++def _parse_quant_mode(env_name: str, default: str = "off") -> str | None:
++    val = os.environ.get(env_name, default).strip().lower()
++    if val in ("", "0", "off", "none", "bf16"):
++        return None
++    if val not in ("int8", "int4_g64", "int4_g128", "nvfp4", "hybrid"):
++        raise ValueError(
++            f"{env_name}={val!r}: expected off, int8, int4_g64, int4_g128, nvfp4, or hybrid"
+         )
++    return val
++
++
++class _MarlinNvFp4Holder(nn.Module):
++    def __init__(self, packed: torch.Tensor, scales: torch.Tensor, gscale: torch.Tensor, n: int, k: int):
++        super().__init__()
++        self.weight = nn.Parameter(packed, requires_grad=False)
++        self.weight_scale = nn.Parameter(scales, requires_grad=False)
++        self.weight_global_scale = nn.Parameter(gscale, requires_grad=False)
++        self.input_size_per_partition = k
++        self.output_size_per_partition = n
++        self.output_partition_sizes = [n]
++        self.params_dtype = torch.bfloat16
++
++
++def _quantize_draft_weight(weight: torch.Tensor, mode: str):
++    from vllm.models.inkling2.nvidia.ops.gemv_q4 import (
++        quantize_int4_group,
++        quantize_rows,
++    )
++
++    if mode == "int8":
++        return ("int8", quantize_rows(weight, "int8"))
++    if mode == "int4_g64":
++        return ("int4_g64", quantize_int4_group(weight, 64))
++    if mode == "int4_g128":
++        return ("int4_g128", quantize_int4_group(weight, 128))
++    if mode == "nvfp4":
++        from vllm.model_executor.kernels.linear import init_nvfp4_linear_kernel
++        from vllm.model_executor.layers.quantization.online.nvfp4 import (
++            _quantize_nvfp4,
++        )
++
++        w = weight.contiguous()
++        kernel = init_nvfp4_linear_kernel(use_a16=True, act_dtype=w.dtype)
++        amax = w.abs().max().float().reshape(1)
++        packed, scales, gscale = _quantize_nvfp4(w, amax)
++        holder = _MarlinNvFp4Holder(packed, scales, gscale, w.shape[0], w.shape[1])
++        kernel.process_weights_after_loading(holder)
++        return ("nvfp4", (kernel, holder))
++    raise ValueError(mode)
++
++
++def _apply_draft_quant(
++    x: torch.Tensor, q_entry: tuple, bias: torch.Tensor | None = None
++) -> torch.Tensor:
++    from vllm.models.inkling2.nvidia.ops.gemv_q4 import (
++        draft_gemv_q4,
++        draft_gemv_q8,
++    )
++
++    mode, tensors = q_entry
++    if mode == "nvfp4":
++        kernel, holder = tensors
++        return kernel.apply_weights(holder, x, bias)
++    if mode == "int8":
++        q, scale = tensors
++        return draft_gemv_q8(x, q, scale, bias)
++    q_packed, scales, zeros = tensors
++    g = 64 if mode == "int4_g64" else 128
++    return draft_gemv_q4(x, q_packed, scales, zeros, bias, g)
++
++
++class _DraftLowMQuantMethod:
++    """Wraps a draft-only LinearBase quant_method to run INT8/INT4 Triton GEMV
++    for low-M decode batches (M <= 64) and fall back to BF16 cuBLAS for prefill."""
++
++    def __init__(self, orig_method, q_entry: tuple):
++        self._orig = orig_method
++        self._q_entry = q_entry
++
++    def __getattr__(self, name):
++        return getattr(self._orig, name)
++
++    def apply(
++        self,
++        layer: nn.Module,
++        x: torch.Tensor,
++        bias: torch.Tensor | None = None,
++    ) -> torch.Tensor:
++        if (
++            x.is_cuda
++            and x.dtype == torch.bfloat16
++            and 0 < x.numel() // x.shape[-1] <= 64
++        ):
++            return _apply_draft_quant(x, self._q_entry, bias)
++        return self._orig.apply(layer, x, bias)
+ 
+ 
+ class DFlash2Qwen3Model(DFlashQwen3Model):
+@@ -526,6 +644,8 @@
+         self.input_embedding_scale = float(
+             draft_config.get("input_embedding_scale", 1.0)
+         )
++        self._fused_kv_q = None
++        self._use_fused_ops = os.environ.get("DFLASH2_FUSED_OPS", "0") == "1"
+         # Without its own tag the selector shares the draft head's compile cache.
+         with set_model_tag("dflash2_candidate_selector"):
+             self.candidate_selector = CandidateSelector(
+@@ -538,7 +658,134 @@
+             )
+ 
+     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+-        return super().embed_input_ids(input_ids) * self.input_embedding_scale
++        embeds = super().embed_input_ids(input_ids)
++        embed_norm = getattr(self, "embed_norm", None)
++        if embed_norm is not None:
++            embeds = embed_norm(embeds)
++        return embeds * self.input_embedding_scale
++
++    def _project_context_kv_token_major(
++        self,
++        context_states: torch.Tensor,
++        num_ctx: int,
++        num_layers: int,
++        num_kv_heads: int,
++        head_dim: int,
++    ) -> torch.Tensor:
++        if (
++            self._fused_kv_q is not None
++            and context_states.is_cuda
++            and context_states.dtype == torch.bfloat16
++            and 0 < num_ctx <= 64
++        ):
++            normed = self._normalize_context_states(context_states)
++            all_kv_flat = _apply_draft_quant(
++                normed, self._fused_kv_q, self._fused_kv_bias
++            )
++            return all_kv_flat.view(num_ctx, num_layers, 2, num_kv_heads, head_dim)
++        return super()._project_context_kv_token_major(
++            context_states, num_ctx, num_layers, num_kv_heads, head_dim
++        )
++
++    def forward(
++        self,
++        input_ids: torch.Tensor,
++        positions: torch.Tensor,
++        input_embeds: torch.Tensor | None = None,
++    ) -> torch.Tensor:
++        if not self._use_fused_ops:
++            return super().forward(input_ids, positions, input_embeds)
++        from vllm.models.beam.nvidia.dflash2_conv_ops import conv_residual_norm
++
++        if input_embeds is None:
++            input_embeds = self.embed_input_ids(input_ids)
++        residual = input_embeds
++        hidden_states = self.layers[0].input_layernorm(input_embeds)
++        n_layers = len(self.layers)
++        for i, layer in enumerate(self.layers):
++            next_norm = (
++                self.layers[i + 1].input_layernorm if i + 1 < n_layers else self.norm
++            )
++            conv = layer.attention_conv
++            hidden_states, coefficients = conv.prepare(hidden_states)
++            hidden_states = layer.self_attn(
++                positions=positions, hidden_states=hidden_states
++            )
++            hidden_states, residual = conv_residual_norm(
++                hidden_states,
++                coefficients,
++                conv.base_kernel[1],
++                residual,
++                layer.post_attention_layernorm.weight,
++                layer.post_attention_layernorm.variance_epsilon,
++                conv.block_size,
++                conv.group_size,
++            )
++            conv = layer.mlp_conv
++            hidden_states, coefficients = conv.prepare(hidden_states)
++            hidden_states = layer.mlp(hidden_states)
++            hidden_states, residual = conv_residual_norm(
++                hidden_states,
++                coefficients,
++                conv.base_kernel[1],
++                residual,
++                next_norm.weight,
++                next_norm.variance_epsilon,
++                conv.block_size,
++                conv.group_size,
++            )
++        return hidden_states
++
++    @torch.no_grad()
++    def prepare_body_quant(self) -> None:
++        mode = _parse_quant_mode("DFLASH2_BODY_QUANT", "off")
++        if mode is None:
++            return
++        quant_fc = os.environ.get("DFLASH2_QUANT_FC", "1") == "1"
++        def _min_k(m_mode: str) -> int:
++            if m_mode == "int4_g64":
++                return 128
++            if m_mode == "int4_g128":
++                return 256
++            if m_mode == "nvfp4":
++                return 64
++            return 1
++
++        def _wrap(mod: nn.Module, m_mode: str) -> None:
++            w = getattr(mod, "weight", None)
++            qm = getattr(mod, "quant_method", None)
++            if w is None or qm is None or w.dtype != torch.bfloat16 or not w.is_cuda:
++                return
++            if w.ndim != 2 or w.shape[1] % _min_k(m_mode) != 0:
++                return
++            if m_mode == "nvfp4" and (w.shape[0] % 64 != 0):
++                m_mode = "int8"
++            q_entry = _quantize_draft_weight(w, m_mode)
++            mod.quant_method = _DraftLowMQuantMethod(qm, q_entry)
++
++        if quant_fc and hasattr(self, "fc"):
++            fc_mode = "int8" if mode in ("int4_g64", "int4_g128", "nvfp4", "hybrid") else mode
++            _wrap(self.fc, fc_mode)
++
++        kv_mode = "int8" if mode == "hybrid" else mode
++        if self._fused_kv_weight is not None and self._fused_kv_weight.is_cuda:
++            if self._fused_kv_weight.shape[1] % _min_k(kv_mode) == 0:
++                self._fused_kv_q = _quantize_draft_weight(self._fused_kv_weight, kv_mode)
++
++        for layer in self.layers:
++            if mode == "hybrid":
++                _wrap(layer.self_attn.qkv_proj, "int8")
++                _wrap(layer.self_attn.o_proj, "int8")
++                _wrap(layer.mlp.gate_up_proj, "nvfp4")
++                _wrap(layer.mlp.down_proj, "nvfp4")
++            else:
++                _wrap(layer.self_attn.qkv_proj, mode)
++                _wrap(layer.self_attn.o_proj, mode)
++                _wrap(layer.mlp.gate_up_proj, mode)
++                _wrap(layer.mlp.down_proj, mode)
++            _wrap(layer.attention_conv.kernel_projection, "int8")
++            _wrap(layer.mlp_conv.kernel_projection, "int8")
++        _wrap(self.candidate_selector.hidden_projection, "int8")
+ 
+ 
+ class DFlash2Qwen3ForCausalLM(DFlashQwen3ForCausalLM):
+@@ -551,17 +798,60 @@
+         super().__init__(vllm_config=vllm_config, prefix=prefix)
+         draft_config = self.config.dflash_config
+         softcap = float(draft_config.get("final_logit_softcapping") or 0.0)
++        softcap_mode = draft_config.get("selector_softcap_mode", "before_correction")
++        self._cand_vocab_size = min(
++            vllm_config.model_config.get_vocab_size(), self.config.vocab_size
++        )
++        self._cand_scale = float(draft_config.get("output_multiplier", 1.0))
++        self._cand_pre_softcap = (
++            softcap if softcap > 0 and softcap_mode == "before_correction" else None
++        )
+         # Candidates index the selector codebooks, which have the draft's
+         # vocabulary; the target's vocabulary can be larger.
+         self.candidate_logits_processor = LogitsProcessor(
+-            min(vllm_config.model_config.get_vocab_size(), self.config.vocab_size),
+-            scale=float(draft_config.get("output_multiplier", 1.0)),
+-            soft_cap=softcap if softcap > 0 else None,
+-        )
++            self._cand_vocab_size,
++            scale=self._cand_scale,
++            soft_cap=self._cand_pre_softcap,
++        )
++        self.model.candidate_selector.post_softcap = (
++            softcap if softcap > 0 and softcap_mode == "after_correction" else 0.0
++        )
++        self._draft_lm_head_q = None
++
++    @torch.no_grad()
++    def prepare_draft_quant(self) -> None:
++        self.model.prepare_body_quant()
++        head_mode = _parse_quant_mode("DFLASH2_HEAD_QUANT", "off")
++        if head_mode is not None and self.lm_head is not None:
++            w = self.lm_head.weight
++            if w.is_cuda and w.dtype == torch.bfloat16:
++                # Slice to unpadded vocab rows so we skip computing padded rows.
++                n_rows = min(w.shape[0], self._cand_vocab_size)
++                self._draft_lm_head_q = _quantize_draft_weight(
++                    w[:n_rows].contiguous(), head_mode
++                )
+ 
+     def compute_candidates(
+         self, hidden_states: torch.Tensor
+     ) -> tuple[torch.Tensor, torch.Tensor]:
++        if (
++            self._draft_lm_head_q is not None
++            and hidden_states.is_cuda
++            and hidden_states.dtype == torch.bfloat16
++            and 0 < hidden_states.shape[0] <= 64
++            and getattr(self.lm_head, "tp_size", 1) == 1
++        ):
++            from vllm.model_executor.layers.logits_processor import _topk
++
++            logits = _apply_draft_quant(hidden_states, self._draft_lm_head_q)
++            values, ids = _topk(logits, self.model.candidate_selector.top_k)
++            ids = ids.to(torch.int64) + self.lm_head.shard_indices.org_vocab_start_index
++            values = values.float()
++            if self._cand_scale != 1.0:
++                values = values * self._cand_scale
++            if self._cand_pre_softcap is not None:
++                values = torch.tanh(values / self._cand_pre_softcap) * self._cand_pre_softcap
++            return ids, values
+         return self.candidate_logits_processor.get_top_k_tokens(
+             self.lm_head, hidden_states, self.model.candidate_selector.top_k
+         )

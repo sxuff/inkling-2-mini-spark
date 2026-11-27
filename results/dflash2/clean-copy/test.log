@@ -1,0 +1,47 @@
+19:25:24 1. target: download.py verification on a hard-linked copy of the checkpoint
+ok   tokenizer_config.json
+verified 13 files in ~/v2/dflash2-test/model
+19:25:36 2. draft: fresh download.py --dflash2 from Hugging Face
+ok   model.safetensors
+get  sglang_inkling_dflash2.py (0.00 GB)
+ok   sglang_inkling_dflash2.py
+verified 5 files in ~/v2/dflash2-test/draft
+19:26:28 draft weights identical to the ones benchmarked
+19:26:28 3. stop live service; serve.sh dflash2 with an EMPTY cache
+19:28:58 cold start (empty cache, image present): 149 s
+19:28:58 4. bench.py (9 greedy requests vs stock hashes + vision)
+code   rep 0   83.64 tok/s  ttft  198 ms
+prose  rep 0   60.59 tok/s  ttft  162 ms
+math   rep 0   84.66 tok/s  ttft  200 ms
+code   rep 1   83.61 tok/s  ttft  163 ms
+prose  rep 1   60.86 tok/s  ttft  159 ms
+math   rep 1   83.88 tok/s  ttft  199 ms
+code   rep 2   83.60 tok/s  ttft  164 ms
+prose  rep 2   60.46 tok/s  ttft  158 ms
+math   rep 2   84.53 tok/s  ttft  198 ms
+median 83.61 tok/s | code 83.61 prose 60.59 math 84.53 | accept 3.833 | canary '408' | hashes 9/9 | vision 2:ok 8:ok
+19:29:42 5. warm restart
+19:30:28 warm start: 42 s
+math   rep 0   84.25 tok/s  ttft  198 ms
+code   rep 1   83.66 tok/s  ttft  165 ms
+prose  rep 1   60.48 tok/s  ttft  160 ms
+math   rep 1   84.62 tok/s  ttft  199 ms
+code   rep 2   83.50 tok/s  ttft  166 ms
+prose  rep 2   60.76 tok/s  ttft  158 ms
+math   rep 2   84.25 tok/s  ttft  197 ms
+median 83.56 tok/s | code 83.56 prose 60.76 math 84.25 | accept 3.833 | canary '408' | hashes 9/9
+19:30:53 6. prefill + concurrency
+[prefill]  4096 (actual 10008) ->  1380.0 tok/s  ttft=7.252s
+[prefill]  8192 (actual 18801) ->  1938.2 tok/s  ttft=9.700s
+[prefill] 32768 (actual 72849) ->  3071.8 tok/s  ttft=23.715s
+[conc C=4] agg=107.10 tok/s  wall=14.34s  tot=1536  per_stream=34.43  ttft_med=1539ms  p90=1540ms
+[conc C=8] agg=155.49 tok/s  wall=19.76s  tot=3072  per_stream=26.01  ttft_med=2889ms  p90=2891ms
+Saved -> ~/v2/dflash2-test/out/full.json
+(EngineCore pid=124) INFO 11-27 18:30:13 [default_loader.py:570] Loading weights took 13.71 seconds
+(EngineCore pid=124) INFO 11-27 18:30:15 [default_loader.py:570] Loading weights took 0.43 seconds
+(EngineCore pid=124) INFO 11-27 18:30:16 [utils.py:428] Using LBNHC KV cache layout.
+(EngineCore pid=124) WARNING 11-27 18:30:16 [kv_cache_planning.py:512] Add 3 padding layers, may waste at most 60.00% KV cache memory
+(EngineCore pid=124) INFO 11-27 18:30:19 [gpu_worker.py:847] Available KV cache memory: 52.47 GiB
+(EngineCore pid=124) INFO 11-27 18:30:25 [extensible_kv_cache.py:693] Memory after warmup: 85.81 GiB free, 0.02 GiB committed to the KV cache, 2.71 GiB kept for transient activations (1.6 GiB allocated at peak, 2.71 GiB of torch reservation growth); 25840 KV cache blocks (50.47 GiB) fit within the requested 77.76 GiB. Torch may reserve up to 55.44 GiB.
+19:32:09 done
+19:32:56 live service: active, health 200
